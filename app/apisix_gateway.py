@@ -30,7 +30,7 @@ class ApisixGateway:
     
     def _wait_for_apisix_ready(self) -> bool:
         """Wait for APISIX to be ready"""
-        for attempt in range(10):
+        for attempt in range(15):  # Increased attempts
             try:
                 response = requests.get(
                     f"{self.admin_url}/apisix/admin/plugins",
@@ -38,18 +38,49 @@ class ApisixGateway:
                     timeout=5
                 )
                 if response.status_code == 200:
+                    print(f"✅ APISIX is ready (attempt {attempt + 1})")
                     return True
-            except:
-                pass
-            time.sleep(2)
+            except Exception as e:
+                print(f"⏳ Waiting for APISIX... (attempt {attempt + 1}): {e}")
+            time.sleep(3)  # Increased wait time
+        print("❌ APISIX not ready after 15 attempts")
         return False
+    
+    def _check_apisix_health(self) -> bool:
+        """Check if APISIX is healthy and responding"""
+        try:
+            response = requests.get(
+                f"{self.admin_url}/apisix/admin/plugins",
+                headers=self.headers,
+                timeout=5
+            )
+            return response.status_code == 200
+        except Exception:
+            return False
+    
+    def _clear_existing_routes(self):
+        """Clear any existing routes to avoid schema conflicts"""
+        try:
+            response = requests.get(f"{self.admin_url}/apisix/admin/routes", headers=self.headers, timeout=10)
+            if response.status_code == 200:
+                routes = response.json()
+                for route in routes.get('list', []):
+                    route_id = route.get('id')
+                    if route_id:
+                        print(f"🗑️  Deleting existing route: {route_id}")
+                        requests.delete(f"{self.admin_url}/apisix/admin/routes/{route_id}", headers=self.headers, timeout=10)
+        except Exception as e:
+            print(f"⚠️  Could not clear existing routes: {e}")
     
     def create_ai_route(self, queue_id: str, providers: List[Dict]) -> Dict[str, Any]:
         """Create APISIX route for queue with model names"""
         try:
             # Wait for APISIX to be ready
             if not self._wait_for_apisix_ready():
-                logger.warning("APISIX not ready, but continuing...")
+                print("⚠️  APISIX not ready, but continuing...")
+            
+            # Clear existing routes to avoid schema conflicts
+            self._clear_existing_routes()
             
             # Extract model names from providers and create route path
             models = []
@@ -68,21 +99,28 @@ class ApisixGateway:
             # Build upstream configuration first (required)
             upstream_config = self._build_upstream_config(providers)
             
-            # Build simplified APISIX route configuration to avoid schema errors
+            # Build proper APISIX route configuration with correct schema
             config = {
                 "uri": route_path,
-                "methods": ["POST", "GET"],
+                "methods": ["POST"],
+                "upstream": upstream_config,
                 "plugins": {
                     "limit-req": self._build_rate_limiting_config(providers),
-                    "proxy-rewrite": {
-                        "headers": self._build_auth_headers(providers),
-                        "uri": "/v1/chat/completions"
+                    "proxy-rewrite": self._build_proxy_rewrite_config(providers),
+                    "cors": {
+                        "allow_origins": "*",
+                        "allow_methods": "GET,POST,PUT,DELETE,OPTIONS",
+                        "allow_headers": "*",
+                        "expose_headers": "*",
+                        "max_age": 3600,
+                        "allow_credential": False
                     }
-                },
-                "upstream": upstream_config,
-                "name": f"AI Gateway Route for {queue_id}",
-                "desc": f"Auto-generated route for queue {queue_id} with models: {', '.join(models)}"
+                }
             }
+            
+            # Validate configuration before sending
+            if not self._validate_route_config(config):
+                return {"success": False, "error": "Invalid route configuration", "route_path": route_path}
             
             # Create route via APISIX Admin API with retry
             print(f"🔧 Creating APISIX route: {route_path}")
@@ -103,31 +141,12 @@ class ApisixGateway:
                     if response.status_code in [200, 201]:
                         logger.info(f"Created APISIX route: {route_path}")
                         return {"success": True, "route_id": route_id, "route_path": route_path}
-                    elif response.status_code == 400:
-                        # Try with even more minimal config if validation fails
-                        minimal_config = {
-                            "uri": route_path,
-                            "methods": ["POST"],
-                            "upstream": upstream_config
-                        }
-                        print(f"🔧 Retrying with minimal config: {json.dumps(minimal_config, indent=2)}")
-                        response = requests.put(
-                            f"{self.admin_url}/apisix/admin/routes/{route_id}",
-                            headers=self.headers,
-                            json=minimal_config,
-                            timeout=self.timeout
-                        )
-                        print(f"🔧 Minimal config response: {response.status_code} - {response.text}")
-                        
-                        if response.status_code in [200, 201]:
-                            logger.info(f"Created APISIX route with minimal config: {route_path}")
-                            return {"success": True, "route_id": route_id, "route_path": route_path}
                     
                     break
                 except requests.exceptions.ConnectionError as e:
                     print(f"🔧 APISIX connection failed (attempt {attempt + 1}): {e}")
                     if attempt < self.max_retries - 1:
-                        time.sleep(3)  # Wait 3 seconds before retry
+                        time.sleep(5)  # Increased wait time
                     else:
                         # Return success with warning instead of failing
                         print(f"⚠️  APISIX connection failed after {self.max_retries} attempts, but continuing...")
@@ -135,13 +154,40 @@ class ApisixGateway:
                 except Exception as e:
                     print(f"🔧 APISIX request failed (attempt {attempt + 1}): {e}")
                     if attempt < self.max_retries - 1:
-                        time.sleep(2)
+                        time.sleep(3)
                     else:
                         return {"success": False, "error": str(e)}
             
             if response:
                 error_msg = response.text
                 logger.error(f"APISIX route creation failed: {error_msg}")
+                
+                # Check if it's a schema validation error
+                if "schema" in error_msg.lower() or "validation" in error_msg.lower():
+                    print(f"🔧 APISIX schema validation error. Trying simplified configuration...")
+                    # Try with minimal configuration
+                    minimal_config = {
+                        "uri": route_path,
+                        "methods": ["POST"],
+                        "upstream": upstream_config
+                    }
+                    
+                    try:
+                        minimal_response = requests.put(
+                            f"{self.admin_url}/apisix/admin/routes/{route_id}",
+                            headers=self.headers,
+                            json=minimal_config,
+                            timeout=self.timeout
+                        )
+                        
+                        if minimal_response.status_code in [200, 201]:
+                            logger.info(f"Created APISIX route with minimal config: {route_path}")
+                            return {"success": True, "route_id": route_id, "route_path": route_path, "warning": "Used minimal configuration"}
+                        else:
+                            return {"success": False, "error": f"Minimal config also failed: HTTP {minimal_response.status_code}: {minimal_response.text}", "route_path": route_path}
+                    except Exception as e:
+                        return {"success": False, "error": f"Minimal config failed: {str(e)}", "route_path": route_path}
+                
                 return {"success": False, "error": f"HTTP {response.status_code}: {error_msg}", "route_path": route_path}
             else:
                 return {"success": False, "error": "No response received", "route_path": route_path}
@@ -155,10 +201,18 @@ class ApisixGateway:
         try:
             route_id = f"route-{queue_id}"
             
+            # Build proper update configuration
             config = {
                 "plugins": {
-                    "proxy-rewrite": {
-                        "uri": "/anything"
+                    "limit-req": self._build_rate_limiting_config(providers),
+                    "proxy-rewrite": self._build_proxy_rewrite_config(providers),
+                    "cors": {
+                        "allow_origins": "*",
+                        "allow_methods": "GET,POST,PUT,DELETE,OPTIONS",
+                        "allow_headers": "*",
+                        "expose_headers": "*",
+                        "max_age": 3600,
+                        "allow_credential": False
                     }
                 }
             }
@@ -205,12 +259,21 @@ class ApisixGateway:
     
     def _build_rate_limiting_config(self, providers: List[Dict]) -> Dict[str, Any]:
         """Build rate limiting configuration from providers"""
+        if not providers:
+            return {
+                "rate": 10,
+                "burst": 20,
+                "key": "remote_addr",
+                "rejected_code": 429,
+                "rejected_msg": "Rate limit exceeded"
+            }
+        
         # Use the most restrictive rate limit from all providers
         min_limit = min(provider.get('limit', 1000) for provider in providers)
         min_time_window = min(provider.get('time_window', 3600) for provider in providers)
         
         # Convert time_window to rate (requests per second)
-        rate = min_limit / min_time_window
+        rate = max(0.1, min_limit / min_time_window)  # Ensure minimum rate
         
         return {
             "rate": rate,
@@ -239,6 +302,19 @@ class ApisixGateway:
         }
         
         return auth_headers.get(provider_type, {"Authorization": f"Bearer {api_key}"})
+    
+    def _build_proxy_rewrite_config(self, providers: List[Dict]) -> Dict[str, Any]:
+        """Build proxy rewrite configuration with auth headers"""
+        auth_headers = self._build_auth_headers(providers)
+        
+        config = {
+            "uri": "/v1/chat/completions"
+        }
+        
+        if auth_headers:
+            config["headers"] = auth_headers
+        
+        return config
     
     def _build_upstream_config(self, providers: List[Dict]) -> Dict[str, Any]:
         """Build upstream configuration from providers"""
@@ -277,6 +353,12 @@ class ApisixGateway:
             }
         }
         
+        # Add auth headers if available
+        auth_headers = self._build_auth_headers(providers)
+        if auth_headers:
+            upstream_config["pass_host"] = "pass"
+            upstream_config["upstream_host"] = host
+        
         return upstream_config
     
     def _get_endpoint(self, provider_type: str, provider: Dict) -> str:
@@ -296,6 +378,37 @@ class ApisixGateway:
         }
         
         return default_endpoints.get(provider_type, "https://api.openai.com")
+
+    def _validate_route_config(self, config: Dict[str, Any]) -> bool:
+        """Validate route configuration before sending to APISIX"""
+        required_fields = ["uri", "methods", "upstream"]
+        
+        for field in required_fields:
+            if field not in config:
+                print(f"❌ Missing required field: {field}")
+                return False
+        
+        # Validate URI format
+        if not config["uri"].startswith("/"):
+            print(f"❌ URI must start with '/': {config['uri']}")
+            return False
+        
+        # Validate methods
+        if not isinstance(config["methods"], list) or not config["methods"]:
+            print(f"❌ Methods must be a non-empty list: {config['methods']}")
+            return False
+        
+        # Validate upstream
+        upstream = config.get("upstream", {})
+        if not isinstance(upstream, dict):
+            print(f"❌ Upstream must be a dictionary: {upstream}")
+            return False
+        
+        if "nodes" not in upstream:
+            print(f"❌ Upstream must have 'nodes' field: {upstream}")
+            return False
+        
+        return True
 
 
 # Global instance for easy import

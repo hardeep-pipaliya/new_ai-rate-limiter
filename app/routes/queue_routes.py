@@ -4,8 +4,29 @@ Queue routes for managing message queues
 from flask import Blueprint, request, jsonify
 from app.services.queue_service import QueueService
 from app.utils.exceptions import QueueNotFoundError, QueueAlreadyExistsError
+from app.apisix_gateway import apisix_gateway
 
 queue_bp = Blueprint('queue', __name__)
+
+@queue_bp.route('/health', methods=['GET'])
+def health_check():
+    """Health check endpoint"""
+    try:
+        # Check APISIX health
+        apisix_healthy = apisix_gateway._check_apisix_health()
+        
+        return jsonify({
+            'success': True,
+            'status': 'healthy',
+            'apisix_healthy': apisix_healthy,
+            'message': 'Service is running'
+        }), 200
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'status': 'unhealthy',
+            'error': str(e)
+        }), 500
 
 @queue_bp.route('/queues/', methods=['GET'])
 def get_queues():
