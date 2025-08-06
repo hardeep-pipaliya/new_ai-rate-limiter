@@ -75,10 +75,11 @@ services:
       APISIX_ALLOW_ADMIN: "0.0.0.0/0"
       APISIX_ADMIN_KEY: "edd1c9f034335f136f87ad84b625c8f1"
       APISIX_PLUGINS: "limit-req,proxy-rewrite,cors"
-      APISIX_ENABLE_DEBUG: "true"
-      APISIX_LOG_LEVEL: "debug"
+      APISIX_ENABLE_DEBUG: "false"
+      APISIX_LOG_LEVEL: "info"
       APISIX_DISCOVERY: "dns"
       APISIX_DNS_RESOLVER: "8.8.8.8"
+      APISIX_ENABLE_GRPC_ENGINE_DEBUG: "false"
     networks:
       ai_rate_limiter_network:
         aliases:
@@ -96,6 +97,8 @@ services:
       redis:
         condition: service_healthy
     user: "0"  # Run as root to avoid permission issues
+    volumes:
+      - /tmp:/tmp  # Mount tmp directory to avoid permission issues
 
   # Flask Application
   flask_app:
