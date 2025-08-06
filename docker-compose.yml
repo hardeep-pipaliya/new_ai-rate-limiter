@@ -80,6 +80,9 @@ services:
       APISIX_DISCOVERY: "dns"
       APISIX_DNS_RESOLVER: "8.8.8.8"
       APISIX_ENABLE_GRPC_ENGINE_DEBUG: "false"
+      APISIX_ENABLE_PROXY_CACHE: "false"
+      APISIX_ENABLE_HTTP2: "false"
+      APISIX_ENABLE_WEBSOCKET: "false"
     networks:
       ai_rate_limiter_network:
         aliases:
@@ -90,7 +93,7 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
-      start_period: 120s
+      start_period: 60s
     depends_on:
       postgres:
         condition: service_healthy
@@ -99,6 +102,7 @@ services:
     user: "0"  # Run as root to avoid permission issues
     volumes:
       - /tmp:/tmp  # Mount tmp directory to avoid permission issues
+    command: ["sh", "-c", "sleep 10 && /usr/local/openresty/bin/openresty -g 'daemon off;'"]
 
   # Flask Application
   flask_app:
