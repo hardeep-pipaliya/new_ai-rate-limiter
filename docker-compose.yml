@@ -1,0 +1,180 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15
+    container_name: ai_rate_limiter_postgres
+    environment:
+      POSTGRES_DB: ai_rate_limiter
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - ai_rate_limiter_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Redis
+  redis:
+    image: redis:7-alpine
+    container_name: ai_rate_limiter_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - ai_rate_limiter_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # RabbitMQ
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    container_name: ai_rate_limiter_rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-guest}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:-guest}
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq_data:/var/lib/rabbitmq
+    networks:
+      - ai_rate_limiter_network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # APISIX AI Gateway
+  apisix:
+    image: apache/apisix:3.7.0-debian
+    container_name: ai_rate_limiter_apisix
+    ports:
+      - "9080:9080"
+      - "9180:9180"
+    environment:
+      APISIX_STAND_ALONE: "true"
+      APISIX_NODE_LISTEN: "9080"
+      APISIX_ENABLE_ADMIN: "true"
+      APISIX_ADMIN_LISTEN_PORT: "9180"
+      APISIX_ALLOW_ADMIN: "0.0.0.0/0"
+      APISIX_ADMIN_KEY: "edd1c9f034335f136f87ad84b625c8f1"
+      APISIX_PLUGINS: "limit-req,proxy-rewrite,cors"
+      APISIX_ENABLE_DEBUG: "true"
+      APISIX_LOG_LEVEL: "debug"
+    networks:
+      ai_rate_limiter_network:
+        aliases:
+          - apisix
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9180/apisix/admin/plugins || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    user: "0"  # Run as root to avoid permission issues
+
+  # Flask Application
+  flask_app:
+    build: .
+    container_name: ai_rate_limiter_app
+    ports:
+      - "8501:8501"
+    env_file:
+      - .env
+    environment:
+      - FLASK_APP=run.py
+      - FLASK_ENV=development
+    volumes:
+      - ./logs:/app/logs
+      - .:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      apisix:
+        condition: service_started
+    networks:
+      - ai_rate_limiter_network
+    restart: unless-stopped
+
+  # Celery Worker
+  celery_worker:
+    build: .
+    container_name: ai_rate_limiter_worker
+    command: celery -A app.celery worker --loglevel=info --concurrency=4 --include=app.tasks.worker_tasks
+    env_file:
+      - .env
+    volumes:
+      - ./logs:/app/logs
+      - .:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      apisix:
+        condition: service_started
+    networks:
+      - ai_rate_limiter_network
+    restart: unless-stopped
+
+  # Celery Beat (Scheduler)
+  celery_beat:
+    build: .
+    container_name: ai_rate_limiter_beat
+    command: celery -A app.celery beat --loglevel=info --scheduler celery.beat.PersistentScheduler --schedule=/tmp/celerybeat-schedule
+    env_file:
+      - .env
+    volumes:
+      - ./logs:/app/logs
+      - .:/app
+      - celery_beat_data:/tmp
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      apisix:
+        condition: service_started
+    networks:
+      - ai_rate_limiter_network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  rabbitmq_data:
+  celery_beat_data:
+
+networks:
+  ai_rate_limiter_network:
+    driver: bridge 
