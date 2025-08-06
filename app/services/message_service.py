@@ -26,6 +26,11 @@ class MessageService:
         if not queue:
             raise QueueNotFoundError(f"Queue {queue_id} not registered please register it first")
         
+        # Get provider for the queue to set provider_id
+        provider = Provider.query.filter_by(queue_id=queue_id).first()
+        if not provider:
+            raise QueueNotFoundError(f"No provider found for queue {queue_id}")
+        
         # Generate batch_id and message_id for single message
         batch_id = uuid.uuid4()
         message_id = uuid.uuid4()
@@ -39,11 +44,12 @@ class MessageService:
         )
         db.session.add(batch)
         
-        # Create message
+        # Create message with provider_id
         message = Message(
             message_id=message_id,
             batch_id=batch_id,
             queue_id=queue_id,
+            provider_id=provider.provider_id,  # Set provider_id here
             prompt=message_data.get('prompt'),
             system_prompt=message_data.get('system_prompt'),
             supportive_variable=message_data.get('supportive_variable', {}),
@@ -81,6 +87,11 @@ class MessageService:
         if not queue:
             raise QueueNotFoundError(f"Queue {queue_id} not registered please register it first")
         
+        # Get provider for the queue to set provider_id
+        provider = Provider.query.filter_by(queue_id=queue_id).first()
+        if not provider:
+            raise QueueNotFoundError(f"No provider found for queue {queue_id}")
+        
         # Generate single batch_id for all messages in the batch
         batch_id = uuid.uuid4()
         
@@ -105,6 +116,7 @@ class MessageService:
                 message_id=message_id,
                 batch_id=batch_id,  # Same batch_id for all messages in batch
                 queue_id=queue_id,
+                provider_id=provider.provider_id,  # Set provider_id here
                 prompt=msg_data.get('prompt'),
                 system_prompt=msg_data.get('system_prompt'),
                 supportive_variable=msg_data.get('supportive_variable', {}),

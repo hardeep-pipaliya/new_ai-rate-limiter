@@ -30,14 +30,10 @@ def process_message(self, message_id: str) -> Dict[str, Any]:
         message.status = 'processing'
         db.session.commit()
         
-        # Get provider for the queue
-        provider = Provider.query.filter_by(queue_id=message.queue_id).first()
+        # Get provider for the queue (provider_id is already set during message creation)
+        provider = Provider.query.filter_by(provider_id=message.provider_id).first()
         if not provider:
-            raise ProviderNotFoundError(f"No provider found for queue {message.queue_id}")
-        
-        # Update message with provider_id
-        message.provider_id = provider.provider_id
-        db.session.commit()
+            raise ProviderNotFoundError(f"No provider found for provider_id {message.provider_id}")
         
         # Ensure APISIX routes exist before processing
         from app.services.queue_service import QueueService
@@ -103,10 +99,9 @@ def process_message(self, message_id: str) -> Dict[str, Any]:
                 'status': 'completed'
             }
         
-        # Update message with result
+        # Update message with result (provider_id is already set)
         message.status = 'completed'
         message.result = response.get('content', '')
-        message.provider_id = provider.provider_id
         db.session.commit()
         
         # Store result in Redis

@@ -77,6 +77,8 @@ services:
       APISIX_PLUGINS: "limit-req,proxy-rewrite,cors"
       APISIX_ENABLE_DEBUG: "true"
       APISIX_LOG_LEVEL: "debug"
+      APISIX_DISCOVERY: "dns"
+      APISIX_DNS_RESOLVER: "8.8.8.8"
     networks:
       ai_rate_limiter_network:
         aliases:
@@ -86,8 +88,8 @@ services:
       test: ["CMD-SHELL", "curl -f http://localhost:9180/apisix/admin/plugins || exit 1"]
       interval: 30s
       timeout: 10s
-      retries: 3
-      start_period: 60s
+      retries: 5
+      start_period: 120s
     depends_on:
       postgres:
         condition: service_healthy
@@ -106,6 +108,8 @@ services:
     environment:
       - FLASK_APP=run.py
       - FLASK_ENV=development
+      - APISIX_ADMIN_URL=http://apisix:9180
+      - APISIX_GATEWAY_URL=http://apisix:9080
     volumes:
       - ./logs:/app/logs
       - .:/app
@@ -129,6 +133,9 @@ services:
     command: celery -A app.celery worker --loglevel=info --concurrency=4 --include=app.tasks.worker_tasks
     env_file:
       - .env
+    environment:
+      - APISIX_ADMIN_URL=http://apisix:9180
+      - APISIX_GATEWAY_URL=http://apisix:9080
     volumes:
       - ./logs:/app/logs
       - .:/app
@@ -152,6 +159,9 @@ services:
     command: celery -A app.celery beat --loglevel=info --scheduler celery.beat.PersistentScheduler --schedule=/tmp/celerybeat-schedule
     env_file:
       - .env
+    environment:
+      - APISIX_ADMIN_URL=http://apisix:9180
+      - APISIX_GATEWAY_URL=http://apisix:9080
     volumes:
       - ./logs:/app/logs
       - .:/app

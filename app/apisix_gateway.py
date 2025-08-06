@@ -68,7 +68,7 @@ class ApisixGateway:
             # Build upstream configuration first (required)
             upstream_config = self._build_upstream_config(providers)
             
-            # Build APISIX route configuration
+            # Build simplified APISIX route configuration to avoid schema errors
             config = {
                 "uri": route_path,
                 "methods": ["POST", "GET"],
@@ -80,8 +80,6 @@ class ApisixGateway:
                     }
                 },
                 "upstream": upstream_config,
-                "status": 1,
-                "priority": 0,
                 "name": f"AI Gateway Route for {queue_id}",
                 "desc": f"Auto-generated route for queue {queue_id} with models: {', '.join(models)}"
             }
@@ -106,12 +104,11 @@ class ApisixGateway:
                         logger.info(f"Created APISIX route: {route_path}")
                         return {"success": True, "route_id": route_id, "route_path": route_path}
                     elif response.status_code == 400:
-                        # Try with minimal config if validation fails
+                        # Try with even more minimal config if validation fails
                         minimal_config = {
                             "uri": route_path,
                             "methods": ["POST"],
-                            "upstream": upstream_config,
-                            "status": 1
+                            "upstream": upstream_config
                         }
                         print(f"🔧 Retrying with minimal config: {json.dumps(minimal_config, indent=2)}")
                         response = requests.put(
