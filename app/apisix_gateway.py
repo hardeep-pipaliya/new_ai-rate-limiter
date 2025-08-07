@@ -1,6 +1,5 @@
 """
-Minimal APISIX AI Gateway Service
-Replace ALL your custom APISIX code with just this file
+APISIX AI Gateway Service for rate limiting
 """
 
 import requests
@@ -8,14 +7,13 @@ import logging
 import os
 import json
 import time
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any
 
 logger = logging.getLogger(__name__)
 
 class ApisixGateway:
     """
-    Minimal APISIX AI Gateway for rate limiting
-    Handles everything automatically - no custom logic needed
+    APISIX AI Gateway for rate limiting
     """
     
     def __init__(self, admin_url: str = None, admin_key: str = None):
@@ -24,26 +22,25 @@ class ApisixGateway:
         self.admin_key = admin_key or os.getenv('APISIX_ADMIN_KEY', 'edd1c9f034335f136f87ad84b625c8f1')
         self.headers = {"X-API-KEY": self.admin_key, "Content-Type": "application/json"}
         
-        # Add connection timeout and retry settings
         self.timeout = 30
         self.max_retries = 5
     
     def _wait_for_apisix_ready(self) -> bool:
         """Wait for APISIX to be ready"""
-        for attempt in range(5):  # Increased attempts
+        for attempt in range(10):
             try:
                 response = requests.get(
                     f"{self.admin_url}/apisix/admin/plugins",
                     headers=self.headers,
-                    timeout=5
+                    timeout=10
                 )
                 if response.status_code == 200:
                     print(f"✅ APISIX is ready (attempt {attempt + 1})")
                     return True
             except Exception as e:
                 print(f"⏳ Waiting for APISIX... (attempt {attempt + 1}): {e}")
-            time.sleep(3)  # Increased wait time
-        # print("❌ APISIX not ready after 5 attempts")
+            time.sleep(5)
+        print("❌ APISIX not ready after 10 attempts")
         return False
     
     def _check_apisix_health(self) -> bool:
@@ -58,29 +55,12 @@ class ApisixGateway:
         except Exception:
             return False
     
-    def _clear_existing_routes(self):
-        """Clear any existing routes to avoid schema conflicts"""
-        try:
-            response = requests.get(f"{self.admin_url}/apisix/admin/routes", headers=self.headers, timeout=10)
-            if response.status_code == 200:
-                routes = response.json()
-                for route in routes.get('list', []):
-                    route_id = route.get('id')
-                    if route_id:
-                        print(f"🗑️  Deleting existing route: {route_id}")
-                        requests.delete(f"{self.admin_url}/apisix/admin/routes/{route_id}", headers=self.headers, timeout=10)
-        except Exception as e:
-            print(f"⚠️  Could not clear existing routes: {e}")
-    
     def create_ai_route(self, queue_id: str, providers: List[Dict]) -> Dict[str, Any]:
         """Create APISIX route for queue with model names"""
         try:
             # Wait for APISIX to be ready
             if not self._wait_for_apisix_ready():
                 print("⚠️  APISIX not ready, but continuing...")
-            
-            # Clear existing routes to avoid schema conflicts
-            self._clear_existing_routes()
             
             # Extract model names from providers and create route path
             models = []
@@ -120,7 +100,6 @@ class ApisixGateway:
             
             # Create route via APISIX Admin API with retry
             print(f"🔧 Creating APISIX route: {route_path}")
-            print(f"🔧 Route config: {json.dumps(config, indent=2)}")
             
             # Retry mechanism for APISIX connection
             response = None
@@ -137,14 +116,21 @@ class ApisixGateway:
                     if response.status_code in [200, 201]:
                         logger.info(f"Created APISIX route: {route_path}")
                         return {"success": True, "route_id": route_id, "route_path": route_path}
+                    elif response.status_code == 409:
+                        # Route already exists, try to update it
+                        print(f"🔧 Route {route_id} already exists, updating...")
+                        update_result = self.update_ai_route(queue_id, providers)
+                        if update_result.get('success'):
+                            return {"success": True, "route_id": route_id, "route_path": route_path, "message": "Route updated successfully"}
+                        else:
+                            return update_result
                     
                     break
                 except requests.exceptions.ConnectionError as e:
                     print(f"🔧 APISIX connection failed (attempt {attempt + 1}): {e}")
                     if attempt < self.max_retries - 1:
-                        time.sleep(5)  # Increased wait time
+                        time.sleep(5)
                     else:
-                        # Return success with warning instead of failing
                         print(f"⚠️  APISIX connection failed after {self.max_retries} attempts, but continuing...")
                         return {"success": True, "route_id": route_id, "route_path": route_path, "warning": "APISIX connection failed, route will be created on first request"}
                 except Exception as e:
@@ -180,7 +166,25 @@ class ApisixGateway:
                             logger.info(f"Created APISIX route with minimal config: {route_path}")
                             return {"success": True, "route_id": route_id, "route_path": route_path, "warning": "Used minimal configuration"}
                         else:
-                            return {"success": False, "error": f"Minimal config also failed: HTTP {minimal_response.status_code}: {minimal_response.text}", "route_path": route_path}
+                            print(f"🔧 Minimal config failed: HTTP {minimal_response.status_code}: {minimal_response.text}")
+                            # Try even more minimal config
+                            basic_config = {
+                                "uri": route_path,
+                                "upstream": upstream_config
+                            }
+                            
+                            basic_response = requests.put(
+                                f"{self.admin_url}/apisix/admin/routes/{route_id}",
+                                headers=self.headers,
+                                json=basic_config,
+                                timeout=self.timeout
+                            )
+                            
+                            if basic_response.status_code in [200, 201]:
+                                logger.info(f"Created APISIX route with basic config: {route_path}")
+                                return {"success": True, "route_id": route_id, "route_path": route_path, "warning": "Used basic configuration"}
+                            else:
+                                return {"success": False, "error": f"Basic config also failed: HTTP {basic_response.status_code}: {basic_response.text}", "route_path": route_path}
                     except Exception as e:
                         return {"success": False, "error": f"Minimal config failed: {str(e)}", "route_path": route_path}
                 
@@ -197,8 +201,11 @@ class ApisixGateway:
         try:
             route_id = f"route-{queue_id}"
             
-            # Build proper update configuration
+            # Build complete update configuration including upstream
+            upstream_config = self._build_upstream_config(providers)
+            
             config = {
+                "upstream": upstream_config,
                 "plugins": {
                     "limit-req": self._build_rate_limiting_config(providers),
                     "proxy-rewrite": self._build_proxy_rewrite_config(providers),
@@ -213,6 +220,7 @@ class ApisixGateway:
                 }
             }
             
+            # Try to update the route
             response = requests.patch(
                 f"{self.admin_url}/apisix/admin/routes/{route_id}",
                 headers=self.headers,
@@ -223,6 +231,10 @@ class ApisixGateway:
             if response.status_code == 200:
                 logger.info(f"Updated APISIX route: {route_id}")
                 return {"success": True, "route_id": route_id}
+            elif response.status_code == 404:
+                # Route doesn't exist, try to create it
+                logger.info(f"Route {route_id} not found, creating new route")
+                return self.create_ai_route(queue_id, providers)
             else:
                 logger.error(f"APISIX route update failed: {response.text}")
                 return {"success": False, "error": f"HTTP {response.status_code}: {response.text}"}
@@ -307,6 +319,7 @@ class ApisixGateway:
             "uri": "/v1/chat/completions"
         }
         
+        # Add auth headers to the rewrite config
         if auth_headers:
             config["headers"] = auth_headers
         
@@ -341,19 +354,16 @@ class ApisixGateway:
                 "connect": 60,
                 "send": 60,
                 "read": 60
-            },
-            "keepalive_pool": {
+            }
+        }
+        
+        # Add keepalive pool only if not already present
+        if "keepalive_pool" not in upstream_config:
+            upstream_config["keepalive_pool"] = {
                 "size": 320,
                 "idle_timeout": 60,
                 "requests": 1000
             }
-        }
-        
-        # Add auth headers if available
-        auth_headers = self._build_auth_headers(providers)
-        if auth_headers:
-            upstream_config["pass_host"] = "pass"
-            upstream_config["upstream_host"] = host
         
         return upstream_config
     
@@ -380,25 +390,16 @@ class ApisixGateway:
 apisix_gateway = ApisixGateway()
 
 # Simple functions for direct use
-def create_route(queue_id: str, providers: List[Dict], admin_key: str = None) -> Dict[str, Any]:
+def create_route(queue_id: str, providers: List[Dict]) -> Dict[str, Any]:
     """Create APISIX AI route with rate limiting"""
     print(f"🔧 [create_route] Called with queue_id: {queue_id}")
     print(f"🔧 [create_route] Providers: {providers}")
-    if admin_key:
-        gateway = ApisixGateway(admin_key=admin_key)
-        return gateway.create_ai_route(queue_id, providers)
     return apisix_gateway.create_ai_route(queue_id, providers)
 
-def update_route(queue_id: str, providers: List[Dict], admin_key: str = None) -> Dict[str, Any]:
+def update_route(queue_id: str, providers: List[Dict]) -> Dict[str, Any]:
     """Update APISIX AI route"""
-    if admin_key:
-        gateway = ApisixGateway(admin_key=admin_key)
-        return gateway.update_ai_route(queue_id, providers)
     return apisix_gateway.update_ai_route(queue_id, providers)
 
-def delete_route(queue_id: str, admin_key: str = None) -> Dict[str, Any]:
+def delete_route(queue_id: str) -> Dict[str, Any]:
     """Delete APISIX AI route"""
-    if admin_key:
-        gateway = ApisixGateway(admin_key=admin_key)
-        return gateway.delete_ai_route(queue_id)
     return apisix_gateway.delete_ai_route(queue_id)

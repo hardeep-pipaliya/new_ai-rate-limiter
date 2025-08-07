@@ -22,6 +22,8 @@ def update_apisix_routes_for_queue(queue_id: str) -> bool:
         # Convert providers to dict format
         providers_data = [p.to_dict() for p in providers]
         
+        print(f"🔧 Updating APISIX routes for queue {queue_id} with {len(providers_data)} providers")
+        
         # Update APISIX route
         apisix_result = update_route(queue_id, providers_data)
         routes_updated = apisix_result.get('success', False)
@@ -29,7 +31,16 @@ def update_apisix_routes_for_queue(queue_id: str) -> bool:
         if routes_updated:
             print(f"✅ Updated APISIX routes for queue {queue_id}")
         else:
-            print(f"⚠️  Failed to update APISIX routes for queue {queue_id}: {apisix_result.get('error', 'Unknown error')}")
+            error_msg = apisix_result.get('error', 'Unknown error')
+            print(f"⚠️  Failed to update APISIX routes for queue {queue_id}: {error_msg}")
+            
+            # Try to create the route if update failed
+            print(f"🔧 Attempting to create route for queue {queue_id}")
+            from app.apisix_gateway import create_route
+            create_result = create_route(queue_id, providers_data)
+            if create_result.get('success'):
+                print(f"✅ Created APISIX route for queue {queue_id}")
+                return True
         
         return routes_updated
         

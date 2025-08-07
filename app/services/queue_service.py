@@ -15,7 +15,7 @@ class QueueService:
     """Service for managing queues with APISIX AI Gateway"""
     
     @staticmethod
-    def create_queue_with_name(queue_name: str, providers: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def create_queue(queue_name: str, providers: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Create a new queue with queue_name and providers, auto-configure APISIX"""
         try:
             # Check if queue with same name already exists
@@ -31,13 +31,19 @@ class QueueService:
             # Create providers
             created_providers = []
             for provider_data in providers:
+                # Validate required fields for each provider
+                required_fields = ['provider_name', 'api_key', 'limit', 'time_window']
+                for field in required_fields:
+                    if not provider_data.get(field):
+                        raise ValueError(f"Provider '{provider_data.get('provider_name', 'unknown')}' is missing required field: {field}")
+                
                 provider = Provider(
                     queue_id=queue.queue_id,
-                    provider_name=provider_data.get('provider_name'),
-                    provider_type=provider_data.get('provider_type'),
-                    api_key=provider_data.get('api_key'),
-                    limit=provider_data.get('limit', 1000),
-                    time_window=provider_data.get('time_window', 3600),
+                    provider_name=provider_data['provider_name'],
+                    provider_type=provider_data.get('provider_type', 'openai'),
+                    api_key=provider_data['api_key'],
+                    limit=provider_data['limit'],
+                    time_window=provider_data['time_window'],
                     config=provider_data.get('config', {})
                 )
                 db.session.add(provider)
@@ -48,14 +54,23 @@ class QueueService:
             # Create APISIX AI Gateway route
             try:
                 providers_data = [p.to_dict() for p in created_providers]
+                print(f"🔧 Creating APISIX route for queue {queue.queue_id} with {len(providers_data)} providers")
                 apisix_result = create_route(str(queue.queue_id), providers_data)
                 routes_created = apisix_result.get('success', False)
                 route_path = apisix_result.get('route_path', '')
+                
+                if routes_created:
+                    print(f"✅ APISIX route created successfully for queue {queue.queue_id}")
+                else:
+                    error_msg = apisix_result.get('error', 'Unknown error')
+                    print(f"⚠️  APISIX route creation failed for queue {queue.queue_id}: {error_msg}")
+                    
             except Exception as e:
                 print(f"⚠️  APISIX route creation failed: {e}")
                 routes_created = False
                 route_path = ''
-            print(routes_created,'routes_created')
+            
+            print(f"🔧 Route creation result: {routes_created}")
             result = {
                 'success': True,
                 'message': 'Queue and providers created successfully',
@@ -77,74 +92,7 @@ class QueueService:
             db.session.rollback()
             raise e
     
-    @staticmethod
-    def create_queue(queue_id: str, providers: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """Create a new queue with providers, auto-configure APISIX"""
-        try:
-            # Convert string queue_id to UUID
-            try:
-                queue_uuid = uuid.UUID(queue_id)
-            except ValueError:
-                raise ValueError(f"Invalid UUID format: {queue_id}. Please provide a valid UUID.")
-            
-            # Check if queue already exists
-            existing_queue = Queue.query.filter_by(queue_id=queue_uuid).first()
-            if existing_queue:
-                raise QueueAlreadyExistsError(f"Queue {queue_id} already exists")
-            
-            # Create queue
-            queue = Queue(queue_id=queue_uuid)
-            db.session.add(queue)
-            db.session.flush()  # Get the queue ID
-            
-            # Create providers
-            created_providers = []
-            for provider_data in providers:
-                provider = Provider(
-                    queue_id=queue.queue_id,
-                    provider_name=provider_data.get('provider_name'),
-                    provider_type=provider_data.get('provider_type'),
-                    api_key=provider_data.get('api_key'),
-                    limit=provider_data.get('limit', 1000),
-                    time_window=provider_data.get('time_window', 3600),
-                    config=provider_data.get('config', {})
-                )
-                db.session.add(provider)
-                created_providers.append(provider)
-            
-            db.session.commit()
-            
-            # Create APISIX AI Gateway route
-            try:
-                providers_data = [p.to_dict() for p in created_providers]
-                apisix_result = create_route(str(queue.queue_id), providers_data)
-                routes_created = apisix_result.get('success', False)
-                route_path = apisix_result.get('route_path', '')
-            except Exception as e:
-                print(f"⚠️  APISIX route creation failed: {e}")
-                routes_created = False
-                route_path = ''
-            
-            result = {
-                'success': True,
-                'message': 'Queue and providers created successfully',
-                'queue': queue.to_dict(),
-                'providers': [p.to_dict() for p in created_providers],
-                'apisix_routes_created': routes_created
-            }
-            
-            if routes_created and route_path:
-                result['route_path'] = route_path
-                result['message'] = f'Queue and providers created successfully. Route available at: {route_path}'
-            
-            if not routes_created:
-                result['warning'] = 'APISIX routes could not be created. Routes will be created on first message processing.'
-            
-            return result
-            
-        except Exception as e:
-            db.session.rollback()
-            raise e
+
     
     @staticmethod
     def ensure_queue_routes_exist(queue_id: str) -> bool:

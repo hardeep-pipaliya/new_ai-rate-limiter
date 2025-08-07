@@ -61,7 +61,6 @@ services:
       retries: 5
 
   # APISIX AI Gateway
-    # APISIX AI Gateway
   apisix:
     image: apache/apisix:3.7.0-debian
     container_name: ai_rate_limiter_apisix
@@ -83,6 +82,8 @@ services:
       APISIX_ENABLE_PROXY_CACHE: "false"
       APISIX_ENABLE_HTTP2: "false"
       APISIX_ENABLE_WEBSOCKET: "false"
+      APISIX_STAND_ALONE: "true"
+      APISIX_ENABLE_ADMIN_CORS: "true"
     networks:
       ai_rate_limiter_network:
         aliases:

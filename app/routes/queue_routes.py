@@ -62,11 +62,27 @@ def create_queue():
         if not providers:
             return jsonify({'message': 'providers list is required', 'success': False}), 400
         
+        # Validate each provider has required fields
+        for i, provider in enumerate(providers):
+            required_fields = ['provider_name', 'api_key', 'limit', 'time_window']
+            missing_fields = []
+            for field in required_fields:
+                if not provider.get(field):
+                    missing_fields.append(field)
+            
+            if missing_fields:
+                return jsonify({
+                    'message': f'Provider {i+1} ({provider.get("provider_name", "unknown")}) is missing required fields: {", ".join(missing_fields)}',
+                    'success': False
+                }), 400
+        
         # Create queue with queue_name
-        result = QueueService.create_queue_with_name(queue_name, providers)
+        result = QueueService.create_queue(queue_name, providers)
         
         return jsonify(result), 201
     except QueueAlreadyExistsError as e:
+        return jsonify({'message': str(e), 'success': False}), 400
+    except ValueError as e:
         return jsonify({'message': str(e), 'success': False}), 400
     except Exception as e:
         return jsonify({'message': str(e), 'success': False}), 500
