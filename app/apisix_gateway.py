@@ -30,31 +30,20 @@ class ApisixGateway:
     
     def _wait_for_apisix_ready(self) -> bool:
         """Wait for APISIX to be ready"""
-        print(f"🔧 Waiting for APISIX at {self.admin_url}...")
-        
-        for attempt in range(20):  # Increased attempts
+        for attempt in range(5):  # Increased attempts
             try:
                 response = requests.get(
                     f"{self.admin_url}/apisix/admin/plugins",
                     headers=self.headers,
-                    timeout=10  # Increased timeout
+                    timeout=5
                 )
                 if response.status_code == 200:
                     print(f"✅ APISIX is ready (attempt {attempt + 1})")
                     return True
-                else:
-                    print(f"⏳ APISIX responded with status {response.status_code} (attempt {attempt + 1})")
-            except requests.exceptions.ConnectionError as e:
-                print(f"⏳ APISIX connection failed (attempt {attempt + 1}): {e}")
             except Exception as e:
-                print(f"⏳ APISIX error (attempt {attempt + 1}): {e}")
-            
-            # Exponential backoff
-            wait_time = min(5 * (2 ** attempt), 30)
-            print(f"⏳ Waiting {wait_time} seconds before next attempt...")
-            time.sleep(wait_time)
-        
-        print("❌ APISIX not ready after 20 attempts")
+                print(f"⏳ Waiting for APISIX... (attempt {attempt + 1}): {e}")
+            time.sleep(3)  # Increased wait time
+        print("❌ APISIX not ready after 5 attempts")
         return False
     
     def _check_apisix_health(self) -> bool:
@@ -68,30 +57,6 @@ class ApisixGateway:
             return response.status_code == 200
         except Exception:
             return False
-    
-    def _diagnose_connection_issue(self) -> str:
-        """Diagnose APISIX connection issues"""
-        try:
-            # Try to connect to the admin port
-            import socket
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(5)
-            
-            # Extract host and port from admin_url
-            from urllib.parse import urlparse
-            parsed = urlparse(self.admin_url)
-            host = parsed.hostname
-            port = parsed.port or 9180
-            
-            result = sock.connect_ex((host, port))
-            sock.close()
-            
-            if result == 0:
-                return "Port is open but APISIX is not responding"
-            else:
-                return f"Port {port} is not accessible on {host}"
-        except Exception as e:
-            return f"Connection test failed: {str(e)}"
     
     def _clear_existing_routes(self):
         """Clear any existing routes to avoid schema conflicts"""
@@ -113,10 +78,6 @@ class ApisixGateway:
             # Wait for APISIX to be ready
             if not self._wait_for_apisix_ready():
                 print("⚠️  APISIX not ready, but continuing...")
-                diagnosis = self._diagnose_connection_issue()
-                print(f"🔧 Connection diagnosis: {diagnosis}")
-                print("💡 Please ensure Docker Desktop is running and containers are started")
-                print("💡 Try: docker-compose down && docker-compose up -d")
             
             # Clear existing routes to avoid schema conflicts
             self._clear_existing_routes()
@@ -156,10 +117,6 @@ class ApisixGateway:
                     }
                 }
             }
-            
-            # Validate configuration before sending
-            if not self._validate_route_config(config):
-                return {"success": False, "error": "Invalid route configuration", "route_path": route_path}
             
             # Create route via APISIX Admin API with retry
             print(f"🔧 Creating APISIX route: {route_path}")
@@ -417,37 +374,6 @@ class ApisixGateway:
         }
         
         return default_endpoints.get(provider_type, "https://api.openai.com")
-
-    def _validate_route_config(self, config: Dict[str, Any]) -> bool:
-        """Validate route configuration before sending to APISIX"""
-        required_fields = ["uri", "methods", "upstream"]
-        
-        for field in required_fields:
-            if field not in config:
-                print(f"❌ Missing required field: {field}")
-                return False
-        
-        # Validate URI format
-        if not config["uri"].startswith("/"):
-            print(f"❌ URI must start with '/': {config['uri']}")
-            return False
-        
-        # Validate methods
-        if not isinstance(config["methods"], list) or not config["methods"]:
-            print(f"❌ Methods must be a non-empty list: {config['methods']}")
-            return False
-        
-        # Validate upstream
-        upstream = config.get("upstream", {})
-        if not isinstance(upstream, dict):
-            print(f"❌ Upstream must be a dictionary: {upstream}")
-            return False
-        
-        if "nodes" not in upstream:
-            print(f"❌ Upstream must have 'nodes' field: {upstream}")
-            return False
-        
-        return True
 
 
 # Global instance for easy import
