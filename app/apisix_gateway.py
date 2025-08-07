@@ -43,7 +43,7 @@ class ApisixGateway:
             except Exception as e:
                 print(f"⏳ Waiting for APISIX... (attempt {attempt + 1}): {e}")
             time.sleep(3)  # Increased wait time
-        print("❌ APISIX not ready after 5 attempts")
+        # print("❌ APISIX not ready after 5 attempts")
         return False
     
     def _check_apisix_health(self) -> bool:
